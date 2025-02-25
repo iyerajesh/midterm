@@ -27,3 +27,16 @@
 * Fact check - Drinking coffee can increase your risk of developing cancer
 * Fact Check - Scientists have discovered a new planet that is capable of supporting life
 * Fact Check - The government is secretly using 5G technology to control people's minds
+=======
+---
+title: Obserch Midterm
+emoji: 💻
+colorFrom: yellow
+colorTo: red
+sdk: docker
+pinned: false
+license: mit
+short_description: Obesity focussed AI agent
+---
+
+Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
