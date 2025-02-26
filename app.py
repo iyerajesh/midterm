@@ -31,6 +31,7 @@ from langchain.prompts import ChatPromptTemplate
 from langgraph.graph import START, StateGraph
 from typing_extensions import List, TypedDict
 from langchain_core.documents import Document
+from langchain.document_loaders import PyMuPDFLoader
 
 
 
@@ -38,9 +39,7 @@ load_dotenv()
 
 # RAG implementation begins here
 
-path = "data/"
-loader = DirectoryLoader(path, glob="*.pdf")
-docs = loader.load()
+docs = PyMuPDFLoader("https://arxiv.org/pdf/2308.02796").load()
 
 text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 split_documents = text_splitter.split_documents(docs)
