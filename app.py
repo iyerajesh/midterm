@@ -214,11 +214,11 @@ async def start_chat():
     workflow = uncompiled_graph.compile()
     cl.user_session.set("workflow", workflow)
 
-    greet_message = cl.Message(content="""**Hi There! - Welcome, I am an AI Agent that can help with Fact-Checking News Articles (Check out Readme to know more about me)**
-    **Since, misinformation and fake information are rampant online, Come here to get your facts right!!!!**
-    So, what do you want me to Fact-Check today?""")
+    greet_message = cl.Message(content="""Losing weight is a journey that's as much mental as it is physical. It's about forming the right habits, staying motivated, and having the knowledge to make the right choices.
+
+But what if you could have a personal AI assistant to guide you through this journey?  \n\nHi There! - Welcome, I am an AI Agent that can help with just that!... Ask me questions below about weight loss and obesity!.""")
     await greet_message.send()
-    
+   
 @cl.on_message  # marks a function that should be run each time the chatbot receives a message from a user
 async def main(message: cl.Message):
     
