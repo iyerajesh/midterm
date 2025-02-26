@@ -10,7 +10,6 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_community.tools.arxiv.tool import ArxivQueryRun
 from langchain_google_community import GoogleSearchAPIWrapper
 from langchain.tools import Tool
-
 from typing import TypedDict, Annotated
 from langgraph.graph.message import add_messages
 import operator
@@ -21,8 +20,114 @@ from langchain_core.messages import HumanMessage
 from langchain_core.messages import SystemMessage
 from langchain_core.messages import AIMessage
 from langchain.schema.runnable.config import RunnableConfig
+from langchain_community.document_loaders import DirectoryLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_openai import OpenAIEmbeddings
+from langchain.vectorstores import Qdrant
+from langchain.embeddings import OpenAIEmbeddings
+from qdrant_client import QdrantClient, models
+from qdrant_client.models import Distance, VectorParams
+from langchain.prompts import ChatPromptTemplate
+from langgraph.graph import START, StateGraph
+from typing_extensions import List, TypedDict
+from langchain_core.documents import Document
+from langchain.document_loaders import PyMuPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import tiktoken
+
+
 
 load_dotenv()
+
+# RAG implementation begins here
+
+docs = PyMuPDFLoader("https://arxiv.org/pdf/2308.02796").load()
+
+def tiktoken_len(text):
+    tokens = tiktoken.encoding_for_model("gpt-4o-mini").encode(
+        text,
+    )
+    return len(tokens)
+
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size = 300,
+    chunk_overlap = 0,
+    length_function = tiktoken_len,
+)
+split_chunks = text_splitter.split_documents(docs)
+
+len(split_chunks)
+embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
+
+qdrant_vectorstore = Qdrant.from_documents(
+    split_chunks,
+    embedding_model,
+    location=":memory:",
+    collection_name="extending_context_window_llama_3",
+)
+qdrant_retriever = qdrant_vectorstore.as_retriever()
+
+def retrieve(state):
+  retrieved_docs = qdrant_retriever.invoke(state["question"])
+  return {"context" : retrieved_docs}
+
+RAG_PROMPT = """\
+You are a helpful assistant who will do the following:
+1. Be clear and detailed
+2. Stay relevant to the context of the question
+
+Follow these guidelines while responding:
+- Assist in setting realistic and achievable weight-loss goals that are tailored to individual [needs] and [lifestyle]. The process should involve an initial assessment of current habits, health status, and lifestyle to establish a baseline. From there, develop a structured, step-by-step plan that includes short-term milestones and long-term objectives. The plan should be flexible enough to adjust as progress is made but structured enough to provide clear direction. Incorporate strategies for overcoming common obstacles, such as motivation dips and plateaus, and recommend tools or resources for tracking progress. Ensure the goals are SMART (Specific, Measurable, Achievable, Relevant, and Time-bound) to increase the likelihood of success.
+- Your task is to identify and help address unhelpful eating patterns in the client seeking to improve their health and wellness. Begin by conducting a comprehensive assessment to understand the client's current eating habits, lifestyle, and underlying factors contributing to their eating patterns. Develop a personalized plan that incorporates achievable goals, mindful eating strategies, and healthier food choices. Provide ongoing support, motivation, and adjustments to the plan based on the client’s progress and feedback. Your approach should be empathetic, evidence-based, and tailored to each client's unique needs, aiming to foster sustainable, positive changes in their eating habits.
+- Act as a fitness coach. Develop a personalized workout routine specifically tailored to meet the client's [fitness goal]. The routine must consider the client's current fitness level, any potential limitations or injuries, and their available equipment. It should include a mix of cardiovascular exercises, strength training, flexibility workouts, and recovery activities. Provide clear instructions for each exercise, suggest the number of sets and repetitions, and offer guidance on proper form to maximize effectiveness and minimize the risk of injury.
+- As a Personal Chef specialized in creating customized meal plans, design a meal plan tailored to specific dietary preferences. This plan should cater to the client's [health goals], [taste preferences], and any [dietary restrictions] they might have. The meal plan should cover breakfast, lunch, dinner, and snack options for one week, ensuring a balanced and nutritious diet. Include a detailed list of ingredients for each meal, preparation instructions that are easy to follow, and tips for meal prepping to save time.
+
+### Question
+{question}
+
+### Context
+{context}
+"""
+
+rag_prompt = ChatPromptTemplate.from_template(RAG_PROMPT)
+llm = ChatOpenAI(model="gpt-4o-mini")
+
+def generate(state):
+  docs_content = "\n\n".join(doc.page_content for doc in state["context"])
+  messages = rag_prompt.format_messages(question=state["question"], context=docs_content)
+  response = llm.invoke(messages)
+  return {"response" : response.content}
+
+class State(TypedDict):
+  question: str
+  context: List[Document]
+  response: str
+  
+graph_builder = StateGraph(State).add_sequence([retrieve, generate])
+graph_builder.add_edge(START, "retrieve")
+graph = graph_builder.compile()
+  
+response = graph.invoke({"question" : "Why is obesity a big problem in America?"})
+response["response"]
+
+#@Tool (name="Obesity Question Answering Tool", description="Useful for when you need to answer questions about obesity. Input should be a fully formed question.")
+def ai_rag_tool(question: str) -> str:
+    """Useful for when you need to answer questions about obesity. Input should be a fully formed question."""
+    response = graph.invoke({"question" : question})
+    return {
+        "messages" : [HumanMessage(content=response["response"])],
+        "context" : response["context"]
+    }
+
+ai_rag_tool_instance = Tool(
+    name="Obesity_QA_Tool",  # ✅ No spaces, only letters, numbers, underscores, or hyphens
+    description="Useful for when you need to answer questions about obesity. Input should be a fully formed question.",
+    func=ai_rag_tool
+)
+
+# RAG implementation ends here  
+
+# Search implementation begins here
 
 # ChatOpenAI Templates
 system_template = """You are a helpful assistant who will do the following:
@@ -52,6 +157,7 @@ tool_belt = [
     tavily_tool,
     ArxivQueryRun(),
     google_search,
+    ai_rag_tool_instance,
 ]
 
 # 2. Initialize and Bind the Model *BEFORE* starting the chat
