@@ -154,10 +154,10 @@ google_search = Tool(
 )
 
 tool_belt = [
+    ai_rag_tool_instance,
     tavily_tool,
     ArxivQueryRun(),
-    google_search,
-    ai_rag_tool_instance,
+    google_search
 ]
 
 # 2. Initialize and Bind the Model *BEFORE* starting the chat
