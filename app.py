@@ -32,6 +32,8 @@ from langgraph.graph import START, StateGraph
 from typing_extensions import List, TypedDict
 from langchain_core.documents import Document
 from langchain.document_loaders import PyMuPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+import tiktoken
 
 
 
@@ -41,30 +43,32 @@ load_dotenv()
 
 docs = PyMuPDFLoader("https://arxiv.org/pdf/2308.02796").load()
 
-text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-split_documents = text_splitter.split_documents(docs)
-len(split_documents)
+def tiktoken_len(text):
+    tokens = tiktoken.encoding_for_model("gpt-4o-mini").encode(
+        text,
+    )
+    return len(tokens)
 
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
-
-client = QdrantClient(":memory:")
-
-client.create_collection(
-    collection_name="obecity_rag",
-    vectors_config=VectorParams(size=1536, distance=Distance.COSINE),
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size = 300,
+    chunk_overlap = 0,
+    length_function = tiktoken_len,
 )
+split_chunks = text_splitter.split_documents(docs)
 
-vector_store = QdrantVectorStore(
-    client=client,
-    collection_name="obecity_rag",
-    embedding=embeddings,
+len(split_chunks)
+embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
+
+qdrant_vectorstore = Qdrant.from_documents(
+    split_chunks,
+    embedding_model,
+    location=":memory:",
+    collection_name="extending_context_window_llama_3",
 )
-
-_ = vector_store.add_documents(documents=split_documents)
-retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+qdrant_retriever = qdrant_vectorstore.as_retriever()
 
 def retrieve(state):
-  retrieved_docs = retriever.invoke(state["question"])
+  retrieved_docs = qdrant_retriever.invoke(state["question"])
   return {"context" : retrieved_docs}
 
 RAG_PROMPT = """\
