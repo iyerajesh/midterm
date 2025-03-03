@@ -31,44 +31,69 @@ from langchain.prompts import ChatPromptTemplate
 from langgraph.graph import START, StateGraph
 from typing_extensions import List, TypedDict
 from langchain_core.documents import Document
-from langchain.document_loaders import PyMuPDFLoader
+from langchain_core.tools import Tool
+from langchain.document_loaders import PDFPlumberLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 import tiktoken
+from langchain_cohere import CohereEmbeddings
+from langchain_huggingface import HuggingFaceEmbeddings
+import pandas as pd
+from langchain_community.vectorstores import FAISS
+from langchain_openai.embeddings import OpenAIEmbeddings
+from langchain_core.documents import Document
+from langchain_community.document_loaders import DirectoryLoader
+from langchain_qdrant import QdrantVectorStore
+from langchain.retrievers.contextual_compression import ContextualCompressionRetriever
+from langchain_cohere import CohereRerank
 
-
-
+# Load environment variables
 load_dotenv()
 
-# RAG implementation begins here
+# Load documents
+folder_path = "data/"
+#loader = DirectoryLoader(path, glob="*.pdf")
+#docs = loader.load()
+docs = []
+for file in os.listdir(folder_path):
+    if file.endswith(".pdf"):
+        loader = PDFPlumberLoader(os.path.join(folder_path, file))
+        docs.extend(loader.load())
 
-docs = PyMuPDFLoader("https://arxiv.org/pdf/2308.02796").load()
+# Split documents into chunks
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+split_documents = text_splitter.split_documents(docs)
 
-def tiktoken_len(text):
-    tokens = tiktoken.encoding_for_model("gpt-4o-mini").encode(
-        text,
-    )
-    return len(tokens)
+# Initialize embeddings
+embeddings = HuggingFaceEmbeddings(model_name="rprav007/snowflake-arctic-embed-m-finetuned-v1")
 
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size = 300,
-    chunk_overlap = 0,
-    length_function = tiktoken_len,
+# Initialize Qdrant client
+client = QdrantClient(":memory:")
+
+# Create collection in Qdrant
+client.create_collection(
+    collection_name="obecity_rag",
+    vectors_config=VectorParams(size=768, distance=Distance.COSINE),
 )
-split_chunks = text_splitter.split_documents(docs)
 
-len(split_chunks)
-embedding_model = OpenAIEmbeddings(model="text-embedding-3-small")
-
-qdrant_vectorstore = Qdrant.from_documents(
-    split_chunks,
-    embedding_model,
-    location=":memory:",
-    collection_name="extending_context_window_llama_3",
+# Initialize vector store
+vector_store = QdrantVectorStore(
+    client=client,
+    collection_name="obecity_rag",
+    embedding=embeddings,
 )
-qdrant_retriever = qdrant_vectorstore.as_retriever()
 
-def retrieve(state):
-  retrieved_docs = qdrant_retriever.invoke(state["question"])
+# Add documents to vector store
+_ = vector_store.add_documents(documents=split_documents)
+
+# Create retriever
+retriever = vector_store.as_retriever(search_kwargs={"k": 5})
+
+def retrieve_adjusted(state):
+  compressor = CohereRerank(model="rerank-v3.5")
+  compression_retriever = ContextualCompressionRetriever(
+    base_compressor=compressor, base_retriever=retriever, search_kwargs={"k": 5}
+  )
+  retrieved_docs = compression_retriever.invoke(state["question"])
   return {"context" : retrieved_docs}
 
 RAG_PROMPT = """\
@@ -103,8 +128,8 @@ class State(TypedDict):
   context: List[Document]
   response: str
   
-graph_builder = StateGraph(State).add_sequence([retrieve, generate])
-graph_builder.add_edge(START, "retrieve")
+graph_builder = StateGraph(State).add_sequence([retrieve_adjusted, generate])
+graph_builder.add_edge(START, "retrieve_adjusted")
 graph = graph_builder.compile()
   
 response = graph.invoke({"question" : "Why is obesity a big problem in America?"})
@@ -133,12 +158,12 @@ ai_rag_tool_instance = Tool(
 system_template = """You are a helpful assistant who will do the following:
 1. Be clear and detailed
 2. Stay relevant to the context of the question
-3. You will perform Claim extraction to get multiple claims and statements from the news article that needs to be verified using Tavily, then perform Evidence search using Arxiv for the paper and publication that support or refute each of the claims and finally perform fact-checking using Google Search by matching all the claims with reliable sources such as government or fact checking websites that corroborate or debunk those claims.
 
 Follow these guidelines while responding:
-- Generate a report that includes all the claims made in different news articles
-- Provide Evidence that was found to support or debunk each of the claim
-- Finally an assessment of each claim based on research to be True, False, Partially True or Unverified
+- Assist in setting realistic and achievable weight-loss goals that are tailored to individual [needs] and [lifestyle]. The process should involve an initial assessment of current habits, health status, and lifestyle to establish a baseline. From there, develop a structured, step-by-step plan that includes short-term milestones and long-term objectives. The plan should be flexible enough to adjust as progress is made but structured enough to provide clear direction. Incorporate strategies for overcoming common obstacles, such as motivation dips and plateaus, and recommend tools or resources for tracking progress. Ensure the goals are SMART (Specific, Measurable, Achievable, Relevant, and Time-bound) to increase the likelihood of success.
+- Your task is to identify and help address unhelpful eating patterns in the client seeking to improve their health and wellness. Begin by conducting a comprehensive assessment to understand the client's current eating habits, lifestyle, and underlying factors contributing to their eating patterns. Develop a personalized plan that incorporates achievable goals, mindful eating strategies, and healthier food choices. Provide ongoing support, motivation, and adjustments to the plan based on the client’s progress and feedback. Your approach should be empathetic, evidence-based, and tailored to each client's unique needs, aiming to foster sustainable, positive changes in their eating habits.
+- Act as a fitness coach. Develop a personalized workout routine specifically tailored to meet the client's [fitness goal]. The routine must consider the client's current fitness level, any potential limitations or injuries, and their available equipment. It should include a mix of cardiovascular exercises, strength training, flexibility workouts, and recovery activities. Provide clear instructions for each exercise, suggest the number of sets and repetitions, and offer guidance on proper form to maximize effectiveness and minimize the risk of injury.
+- As a Personal Chef specialized in creating customized meal plans, design a meal plan tailored to specific dietary preferences. This plan should cater to the client's [health goals], [taste preferences], and any [dietary restrictions] they might have. The meal plan should cover breakfast, lunch, dinner, and snack options for one week, ensuring a balanced and nutritious diet. Include a detailed list of ingredients for each meal, preparation instructions that are easy to follow, and tips for meal prepping to save time.
 
 """
 
@@ -153,11 +178,29 @@ google_search = Tool(
     description="Use this tool to search Google.", # Provide a description
 )
 
+def tavily_search_func(query: str):
+    return TavilySearchResults(max_results=5).invoke({"query": query})
+
+tavily_tool_instance = Tool(
+    name="TavilySearch",
+    func=tavily_search_func,  # ✅ Now has a proper function name
+    description="Use this tool to search Tavily."
+)
+
+def arxiv_query_func(query: str):
+    return ArxivQueryRun().invoke({"query": query})
+
+arxiv_tool_instance = Tool(
+    name="ArxivQuery",
+    func=arxiv_query_func,  
+    description="Use this tool to search academic papers on Arxiv."
+)
+
 tool_belt = [
-    ai_rag_tool_instance,
-    tavily_tool,
-    ArxivQueryRun(),
-    google_search
+    tavily_tool_instance,  
+    arxiv_tool_instance,  
+    google_search,  
+    ai_rag_tool_instance,  
 ]
 
 # 2. Initialize and Bind the Model *BEFORE* starting the chat
@@ -167,12 +210,16 @@ model = model.bind_tools(tool_belt)
 #Initialize state for LangGraph
 class AgentState(TypedDict):
   messages: Annotated[list, add_messages]
+  context: List[Document]
 
 #add call_model and tool_node
 def call_model(state):
   messages = state["messages"]
   response = model.invoke(messages)
-  return {"messages" : [response]}
+  return {
+        "messages" : [response],
+        "context" : state.get("context", [])
+  }
 
 tool_node = ToolNode(tool_belt)
 
@@ -200,25 +247,16 @@ uncompiled_graph.add_conditional_edges(
 
 uncompiled_graph.add_edge("action", "agent")
 
-# @cl.set_starters
-# async def set_starters():
-#     return [
-#         cl.Starter(
-#             label="Hi There! - Welcome, I am an AI Agent that can help with Fact-Checking News Articles",
-#             message="Misinformation and Fake information are rampant online, Come here to get your facts right!!!! So, what do you want me to Fact-Check today?",
-#             ),
-#         ]
-
 @cl.on_chat_start  # marks a function that will be executed at the start of a user session
 async def start_chat():
     workflow = uncompiled_graph.compile()
     cl.user_session.set("workflow", workflow)
 
-    greet_message = cl.Message(content="""Losing weight is a journey that's as much mental as it is physical. It's about forming the right habits, staying motivated, and having the knowledge to make the right choices.
-
-But what if you could have a personal AI assistant to guide you through this journey?  \n\nHi There! - Welcome, I am an AI Agent that can help with just that!... Ask me questions below about weight loss and obesity!.""")
+    greet_message = cl.Message(content="""**Hi There! - Welcome, I am an AI Agent that can help with providing information about Obecity and weight-loss (Check out Readme to know more about me)**
+    **Since, Obesity is a big problem in America, Come here to get your facts right and find a healthy lifestyle using my tools!!!!**
+    ***So, what do you want to learn today?***""")
     await greet_message.send()
-   
+    
 @cl.on_message  # marks a function that should be run each time the chatbot receives a message from a user
 async def main(message: cl.Message):
     
