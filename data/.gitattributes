@@ -1,0 +1,4 @@
+Tschop2023_SeekingSatiety.pdf filter=lfs diff=lfs merge=lfs -text
+Wadden2021_LifestyleModificationApproachesTreatmentObesityinAdults.pdf filter=lfs diff=lfs merge=lfs -text
+Davidson2023_IBuiltanAIFatLossChatbotandDiscoveredWhyYoureOverweight.pdf filter=lfs diff=lfs merge=lfs -text
+ElmalehSachs2023_ObesityManagementinAdults.pdf filter=lfs diff=lfs merge=lfs -text
